@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Dict, Optional
 
+
 from netmiko import NetmikoAuthenticationException, NetmikoTimeoutException
 from netmiko.ssh_autodetect import SSHDetect
 
@@ -99,6 +100,7 @@ def _autodetect_vendor(ip: str, username: str, password: str) -> Optional[str]:
 def _disable_paging(connection, vendor: str) -> None:
     commands = resolve_disable_paging_commands(vendor, None)
     apply_disable_paging(connection, commands)
+
 
 
 def _collect_device_info(

@@ -56,7 +56,7 @@ def resolve_disable_paging_commands(
 
     return list(DEFAULT_DISABLE_PAGING_BY_VENDOR["default"])
 
-
+  
 def parse_rules_argument(raw: Iterable[str] | str | None) -> List[str]:
     """Convertit l'entrée CLI/configuration en liste de règles sans doublon."""
 
@@ -84,7 +84,6 @@ def parse_rules_argument(raw: Iterable[str] | str | None) -> List[str]:
         seen.add(key)
         cleaned.append(key)
     return cleaned
-
 
 _PAGING_ERROR_PATTERN = re.compile(
     r"(unrecognized|invalid|unknown\s+command|incomplete|syntax\s+error)",

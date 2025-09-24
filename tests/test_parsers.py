@@ -115,7 +115,7 @@ class ParserTests(unittest.TestCase):
         self.assertIn("no page", defaults)
         custom = resolve_disable_paging_commands("huawei", "undo page,no page")
         self.assertEqual(custom, ["undo page", "no page"])
-
+        
     def test_disable_paging_stops_after_success(self) -> None:
         class DummyConnection:
             def __init__(self) -> None:
@@ -152,7 +152,6 @@ class ParserTests(unittest.TestCase):
             connection.commands,
             ["no page", "terminal length 0"],
         )
-
     def test_hardware_inventory_cache(self) -> None:
         rule = HardwareInventoryRule(config={})
         cache = {

@@ -19,7 +19,6 @@ INVALID_PATTERN = re.compile(r"(Invalid|Unrecognized|Incomplete input)", re.IGNO
 
 class HardwareInventoryRule(BaseAuditRule):
     """Collecte le modèle, la version et le firmware."""
-
     @property
     def name(self) -> str:
         return "hardware_inventory"
