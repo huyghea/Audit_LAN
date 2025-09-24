@@ -17,7 +17,9 @@ def read_ini(path: Path) -> configparser.ConfigParser:
 
 def load_main_config(path: Path) -> Dict[str, str]:
     parser = read_ini(path)
-    return {key: value for key, value in parser.items("audit")} if parser.has_section("audit") else {}
+    if parser.has_section("audit"):
+        return {key: value for key, value in parser.items("audit")}
+    return {}
 
 
 def load_rule_config(rule_name: str, base_dir: Path) -> Dict[str, str]:

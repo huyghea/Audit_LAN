@@ -38,26 +38,77 @@ def configure_logging(level: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Orchestrateur d'audits réseau modulaire")
-    parser.add_argument("-u", "--username", required=True, help="Nom d'utilisateur SSH")
-    parser.add_argument("-p", "--password", help="Mot de passe SSH (sinon saisie interactive)")
-    parser.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG, help="Fichier de configuration .ini")
+    parser = argparse.ArgumentParser(
+        description="Orchestrateur d'audits réseau modulaire"
+    )
+    parser.add_argument(
+        "-u",
+        "--username",
+        required=True,
+        help="Nom d'utilisateur SSH",
+    )
+    parser.add_argument(
+        "-p",
+        "--password",
+        help="Mot de passe SSH (sinon saisie interactive)",
+    )
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="Fichier de configuration .ini",
+    )
     parser.add_argument(
         "-r",
         "--rules",
         nargs="+",
-        help="Règles à exécuter (noms séparés par un espace ou une virgule; 'all' pour tout exécuter)",
+        help=(
+            "Règles à exécuter (noms séparés par un espace ou une virgule; "
+            "'all' pour tout exécuter)"
+        ),
     )
-    parser.add_argument("--list-rules", action="store_true", help="Affiche les règles disponibles puis quitte")
-    parser.add_argument("-i", "--ips", type=Path, help="Fichier contenant les IPs cibles")
-    parser.add_argument("-o", "--output", type=Path, help="Chemin du rapport CSV")
-    parser.add_argument("-w", "--workers", type=int, help="Nombre de threads parallèles")
+    parser.add_argument(
+        "--list-rules",
+        action="store_true",
+        help="Affiche les règles disponibles puis quitte",
+    )
+    parser.add_argument(
+        "-i",
+        "--ips",
+        type=Path,
+        help="Fichier contenant les IPs cibles",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="Chemin du rapport CSV",
+    )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        help="Nombre de threads parallèles",
+    )
 
     parser.add_argument("--snmp-user", default=os.environ.get("SNMP_USER"))
-    parser.add_argument("--snmp-auth-key", default=os.environ.get("SNMP_AUTH_KEY"))
-    parser.add_argument("--snmp-priv-key", default=os.environ.get("SNMP_PRIV_KEY"))
-    parser.add_argument("--snmp-auth-proto", default=os.environ.get("SNMP_AUTH_PROTO"))
-    parser.add_argument("--snmp-priv-proto", default=os.environ.get("SNMP_PRIV_PROTO"))
+    parser.add_argument(
+        "--snmp-auth-key",
+        default=os.environ.get("SNMP_AUTH_KEY"),
+    )
+    parser.add_argument(
+        "--snmp-priv-key",
+        default=os.environ.get("SNMP_PRIV_KEY"),
+    )
+    parser.add_argument(
+        "--snmp-auth-proto",
+        default=os.environ.get("SNMP_AUTH_PROTO"),
+    )
+    parser.add_argument(
+        "--snmp-priv-proto",
+        default=os.environ.get("SNMP_PRIV_PROTO"),
+    )
 
     args = parser.parse_args()
 
@@ -84,7 +135,6 @@ def main() -> None:
     if not ips:
         logging.warning("Aucune IP à auditer - arrêt")
         return
-      
     cli_rules = parse_rules_argument(args.rules)
     if cli_rules:
         if any(rule == "all" for rule in cli_rules):
@@ -105,14 +155,32 @@ def main() -> None:
     if any(rule.name == "snmp_v3_check" for rule in rule_instances):
         snmp_creds = {
             "snmp_user": args.snmp_user or config.get("snmp_user"),
-            "snmp_auth_key": args.snmp_auth_key or config.get("snmp_auth_key"),
-            "snmp_priv_key": args.snmp_priv_key or config.get("snmp_priv_key"),
-            "snmp_auth_proto": (args.snmp_auth_proto or config.get("snmp_auth_proto", "SHA")).upper(),
-            "snmp_priv_proto": (args.snmp_priv_proto or config.get("snmp_priv_proto", "AES")).upper(),
+            "snmp_auth_key": (
+                args.snmp_auth_key or config.get("snmp_auth_key")
+            ),
+            "snmp_priv_key": (
+                args.snmp_priv_key or config.get("snmp_priv_key")
+            ),
+            "snmp_auth_proto": (
+                args.snmp_auth_proto
+                or config.get("snmp_auth_proto", "SHA")
+            ).upper(),
+            "snmp_priv_proto": (
+                args.snmp_priv_proto
+                or config.get("snmp_priv_proto", "AES")
+            ).upper(),
         }
-        missing = [key for key, value in snmp_creds.items() if key in {"snmp_user", "snmp_auth_key", "snmp_priv_key"} and not value]
+        required_keys = {"snmp_user", "snmp_auth_key", "snmp_priv_key"}
+        missing = [
+            key
+            for key, value in snmp_creds.items()
+            if key in required_keys and not value
+        ]
         if missing:
-            logging.warning("Identifiants SNMP incomplets : %s", ", ".join(missing))
+            logging.warning(
+                "Identifiants SNMP incomplets : %s",
+                ", ".join(missing),
+            )
 
     logging.info(
         "Démarrage audit: %s règles | %s équipements | %s threads",
@@ -130,7 +198,14 @@ def main() -> None:
     rows = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run_audit, ip, args.username, args.password, rule_instances, snmp_creds): ip
+            executor.submit(
+                run_audit,
+                ip,
+                args.username,
+                args.password,
+                rule_instances,
+                snmp_creds,
+            ): ip
             for ip in ips
         }
         for idx, future in enumerate(as_completed(futures), start=1):
@@ -138,10 +213,25 @@ def main() -> None:
             try:
                 row = future.result()
                 rows.append(row)
-                logging.info("[%s/%s] %s - %s", idx, len(ips), ip_address, row.get("hostname", "N/A"))
-            except Exception as exc:  # pragma: no cover - robuste face aux erreurs runtime
-                logging.exception("Erreur pendant le traitement de %s", ip_address)
-                error_row = {"ip": ip_address, "duration": 0, "hostname": "ERROR", "model": str(exc), "firmware": ""}
+                logging.info(
+                    "[%s/%s] %s - %s",
+                    idx,
+                    len(ips),
+                    ip_address,
+                    row.get("hostname", "N/A"),
+                )
+            except Exception as exc:  # pragma: no cover - dépend runtime
+                logging.exception(
+                    "Erreur pendant le traitement de %s",
+                    ip_address,
+                )
+                error_row = {
+                    "ip": ip_address,
+                    "duration": 0,
+                    "hostname": "ERROR",
+                    "model": str(exc),
+                    "firmware": "",
+                }
                 for rule in rule_instances:
                     error_row[f"{rule.name}_compliant"] = False
                     error_row[f"{rule.name}_details"] = "Erreur d'exécution"

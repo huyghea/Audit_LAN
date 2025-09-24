@@ -6,21 +6,31 @@ import re
 from typing import Dict, List, Tuple
 
 from .base_rules import BaseAuditRule
-from ..utils import disable_paging, normalize_list, run_command_with_paging
+from ..utils import (
+    disable_paging,
+    normalize_list,
+    resolve_disable_paging_commands,
+    run_command_with_paging,
+)
 
 
 def parse_transceivers(output: str) -> List[Dict[str, object]]:
-    blocks = re.finditer(
-        r"(?P<port>(?:GigabitEthernet|Ten[- ]?GigabitEthernet|Forty[- ]?GigabitEthernet|Hundred[- ]?GigE)\S+)"
+    pattern = (
+        r"(?P<port>(?:GigabitEthernet|Ten[- ]?GigabitEthernet|"
+        r"Forty[- ]?GigabitEthernet|Hundred[- ]?GigE)\S+)"
         r"\s+transceiver\s+diagnostic\s+information:\s*"
-        r"(?P<info>.*?)(?=(?:GigabitEthernet|Ten[- ]?GigabitEthernet|Forty[- ]?GigabitEthernet|Hundred[- ]?GigE)|$)",
-        output,
-        re.IGNORECASE | re.DOTALL,
+        r"(?P<info>.*?)(?=(?:GigabitEthernet|Ten[- ]?GigabitEthernet|"
+        r"Forty[- ]?GigabitEthernet|Hundred[- ]?GigE)|$)"
     )
+    blocks = re.finditer(pattern, output, re.IGNORECASE | re.DOTALL)
 
     regex_value = re.compile(
-        r"(Temperature|Voltage|Bias\s*Current|RX\s*Power|TX\s*Power)\s*[:=]\s*([-]?\d+(?:\.\d+)?)"
-        r".*?(?:Threshold|Range|Warning)\s*[:=]?\s*([-]?\d+(?:\.\d+)?)\s*(?:to|\.{2})\s*([-]?\d+(?:\.\d+)?)",
+        (
+            r"(Temperature|Voltage|Bias\s*Current|RX\s*Power|TX\s*Power)"
+            r"\s*[:=]\s*([-]?\d+(?:\.\d+)?)"
+            r".*?(?:Threshold|Range|Warning)\s*[:=]?\s*"
+            r"([-]?\d+(?:\.\d+)?)\s*(?:to|\.{2})\s*([-]?\d+(?:\.\d+)?)"
+        ),
         re.IGNORECASE | re.DOTALL,
     )
 
@@ -31,7 +41,11 @@ def parse_transceivers(output: str) -> List[Dict[str, object]]:
         present = True
         measurements: List[Tuple[str, float, float, float, bool]] = []
 
-        if re.search(r"(transceiver\s+is\s+absent|Error:\s*The\s+transceiver\s+is\s+absent)", info, re.IGNORECASE):
+        if re.search(
+            r"(transceiver\s+is\s+absent|Error:\s*The\s+transceiver\s+is\s+absent)",
+            info,
+            re.IGNORECASE,
+        ):
             present = False
         else:
             for value_match in regex_value.finditer(info):
@@ -47,7 +61,9 @@ def parse_transceivers(output: str) -> List[Dict[str, object]]:
             if not measurements:
                 present = bool(re.search(r"present", info, re.IGNORECASE))
 
-        transceivers.append({"port": port, "present": present, "measurements": measurements})
+        transceivers.append(
+            {"port": port, "present": present, "measurements": measurements}
+        )
 
     return transceivers
 
@@ -60,17 +76,23 @@ class TransceiverDiagnosticsRule(BaseAuditRule):
     def run(self, info: dict) -> dict:
         connection = info.get("connection") or info.get("shell")
         if connection is None:
-            return {"name": self.name, "passed": False, "details": "Connexion SSH indisponible"}
+            return {
+                "name": self.name,
+                "passed": False,
+                "details": "Connexion SSH indisponible",
+            }
 
-        disable_paging(
-            connection,
-            normalize_list(self.config.get("disable_paging", "screen-length disable")),
+        disable_commands = resolve_disable_paging_commands(
+            info.get("device_type"),
+            self.config.get("disable_paging", "screen-length disable"),
         )
+        disable_paging(connection, disable_commands)
 
         commands = normalize_list(
             self.config.get(
                 "commands",
-                "display transceiver diagnosis interface,display transceiver,show interfaces transceiver",
+                "display transceiver diagnosis interface,"
+                "display transceiver,show interfaces transceiver",
             )
         )
 
@@ -89,7 +111,11 @@ class TransceiverDiagnosticsRule(BaseAuditRule):
 
             absent = sum(1 for t in transceivers if not t["present"])
             present = sum(1 for t in transceivers if t["present"])
-            details_parts = [f"SFP présents: {present}", f"absents: {absent}", f"commande: {command}"]
+            details_parts = [
+                f"SFP présents: {present}",
+                f"absents: {absent}",
+                f"commande: {command}",
+            ]
 
             for transceiver in transceivers:
                 port = transceiver["port"]
@@ -102,7 +128,10 @@ class TransceiverDiagnosticsRule(BaseAuditRule):
                     continue
                 for metric, value, vmin, vmax, ok in measurements:
                     if not ok:
-                        alert = f"{port} {metric}={value} (seuil {vmin}..{vmax})"
+                        alert = (
+                            f"{port} {metric}={value} "
+                            f"(seuil {vmin}..{vmax})"
+                        )
                         all_alerts.append(alert)
                         details_parts.append(f"ALERTE {alert}")
 
@@ -110,6 +139,14 @@ class TransceiverDiagnosticsRule(BaseAuditRule):
             details = "; ".join(details_parts)
             if not passed:
                 details += " - mesures hors plage"
-            return {"name": self.name, "passed": passed, "details": details}
+            return {
+                "name": self.name,
+                "passed": passed,
+                "details": details,
+            }
 
-        return {"name": self.name, "passed": False, "details": "Aucune donnée transceiver disponible"}
+        return {
+            "name": self.name,
+            "passed": False,
+            "details": "Aucune donnée transceiver disponible",
+        }

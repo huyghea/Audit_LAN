@@ -4,18 +4,41 @@ from __future__ import annotations
 
 import unittest
 
+from audit.parsers.hardware import (
+    clean_cli_output,
+    extract_model,
+    extract_version_and_firmware,
+)
 from audit.rules.cpu_usage import parse_cpu_output
 from audit.rules.fan_health import analyse_fans
+from audit.rules.hardware_inventory import HardwareInventoryRule
 from audit.rules.memory_usage import extract_usage_percent
 from audit.rules.power_supply import analyse_power
 from audit.rules.storage_capacity import extract_disk_usage, extract_firmwares
 from audit.rules.temperature import parse_temperatures
 from audit.rules.transceiver_diagnostics import parse_transceivers
 from audit.rules.uptime import parse_uptime
-from audit.utils import parse_rules_argument
+from audit.utils import parse_rules_argument, resolve_disable_paging_commands
 
 
 class ParserTests(unittest.TestCase):
+    def test_hardware_cleaning(self) -> None:
+        raw = "\x1b[31mSwitch\x1b[0m\r\nPress any key to continue...\n"
+        cleaned = clean_cli_output(raw)
+        self.assertNotIn("\x1b", cleaned)
+        self.assertNotIn("Press any key", cleaned)
+
+    def test_hardware_model_and_version(self) -> None:
+        output = (
+            "HPE 5130 EI Switch with 4 slots\n"
+            "Comware Software, Version 7.1.059, Release 3307P06\n"
+        )
+        model = extract_model(output)
+        version, firmware = extract_version_and_firmware(output)
+        self.assertEqual(model, "5130 EI")
+        self.assertEqual(version, "7.1.059")
+        self.assertEqual(firmware, "7.1.059, Release 3307P06")
+
     def test_cpu_parse_generic(self) -> None:
         output = "Five seconds: 23% One minute: 12% Five minutes: 5%"
         values, labels = parse_cpu_output(output)
@@ -58,7 +81,10 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(parsed[0]["measurements"]), 2)
 
     def test_uptime_parser(self) -> None:
-        output = "Uptime is 1 weeks, 2 days, 3 hours, 4 minutes\nLast reboot reason : power-off"
+        output = (
+            "Uptime is 1 weeks, 2 days, 3 hours, 4 minutes\n"
+            "Last reboot reason : power-off"
+        )
         formatted, reason, seconds = parse_uptime(output)
         self.assertEqual(reason, "power-off")
         self.assertEqual(seconds, 1 * 7 * 86400 + 2 * 86400 + 3 * 3600 + 4 * 60)
@@ -66,9 +92,43 @@ class ParserTests(unittest.TestCase):
 
     def test_parse_rules_argument(self) -> None:
         self.assertEqual(parse_rules_argument("sysname,tacacs"), ["sysname", "tacacs"])
-        self.assertEqual(parse_rules_argument(["cpu_usage", "cpu_usage", "memory_usage"]), ["cpu_usage", "memory_usage"])
-        self.assertEqual(parse_rules_argument(["snmp_v3_check,memory_usage", "ALL"]), ["snmp_v3_check", "memory_usage", "all"])
+        self.assertEqual(
+            parse_rules_argument(["cpu_usage", "cpu_usage", "memory_usage"]),
+            ["cpu_usage", "memory_usage"],
+        )
+        self.assertEqual(
+            parse_rules_argument(["snmp_v3_check,memory_usage", "ALL"]),
+            ["snmp_v3_check", "memory_usage", "all"],
+        )
         self.assertEqual(parse_rules_argument(None), [])
+
+    def test_resolve_disable_paging_commands(self) -> None:
+        self.assertEqual(
+            resolve_disable_paging_commands("huawei", None)[0],
+            "screen-length disable",
+        )
+        defaults = resolve_disable_paging_commands("unknown", None)
+        self.assertIn("no page", defaults)
+        custom = resolve_disable_paging_commands("huawei", "undo page,no page")
+        self.assertEqual(custom, ["undo page", "no page"])
+
+    def test_hardware_inventory_cache(self) -> None:
+        rule = HardwareInventoryRule(config={})
+        cache = {
+            "model": "N/A",
+            "version": "N/A",
+            "firmware": "N/A",
+            "command": "display version",
+            "raw_output": (
+                "Aruba 2930F 24G 4SFP Switch with 4 slots\n"
+                "Product Name : JL258A\n"
+                "Software Version : WC.16.08.001\n"
+            ),
+        }
+        result = rule.run({"hardware_inventory": cache})
+        self.assertTrue(result["passed"])
+        self.assertIn("2930F", result["details"])
+        self.assertIn("via display version", result["details"])
 
 if __name__ == "__main__":
     unittest.main()

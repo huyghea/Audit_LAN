@@ -6,8 +6,12 @@ import re
 from typing import List, Optional, Tuple
 
 from .base_rules import BaseAuditRule
-from ..utils import disable_paging, normalize_list, run_command_with_paging
-
+from ..utils import (
+    disable_paging,
+    normalize_list,
+    resolve_disable_paging_commands,
+    run_command_with_paging,
+)
 
 def extract_disk_usage(output: str) -> Tuple[Optional[int], Optional[int]]:
     for line in output.splitlines():
@@ -69,25 +73,34 @@ class StorageCapacityRule(BaseAuditRule):
     def run(self, info: dict) -> dict:
         connection = info.get("connection") or info.get("shell")
         if connection is None:
-            return {"name": self.name, "passed": False, "details": "Connexion SSH indisponible"}
+            return {
+                "name": self.name,
+                "passed": False,
+                "details": "Connexion SSH indisponible",
+            }
 
-        disable_paging(
-            connection,
-            normalize_list(
-                self.config.get(
-                    "disable_paging",
-                    "screen-length 0 temporary,screen-length disable,no page,terminal length 0",
-                )
+        disable_commands = resolve_disable_paging_commands(
+            info.get("device_type"),
+            self.config.get(
+                "disable_paging",
+                "screen-length disable,screen-length 0 temporary,no page,"
+                "terminal length 0",
             ),
         )
+        disable_paging(connection, disable_commands)
 
-        commands = normalize_list(self.config.get("commands", "dir,show flash,display flash"))
+        commands = normalize_list(
+            self.config.get("commands", "dir,show flash,display flash")
+        )
 
         for command in commands:
             output = run_command_with_paging(connection, command)
             if not output.strip():
                 continue
-            if any(keyword in output for keyword in ("Unrecognized", "Invalid", "Unknown command")):
+            if any(
+                keyword in output
+                for keyword in ("Unrecognized", "Invalid", "Unknown command")
+            ):
                 continue
 
             total_kb, free_kb = extract_disk_usage(output)
@@ -98,11 +111,17 @@ class StorageCapacityRule(BaseAuditRule):
                 firmware_kb = firmware_size / 1024
                 passed = free_kb > firmware_kb
                 details = (
-                    f"Libre: {free_kb} KB | Firmware max: {firmware_name} ({firmware_kb:.0f} KB) via {command}"
+                    "Libre: "
+                    f"{free_kb} KB | Firmware max: {firmware_name} "
+                    f"({firmware_kb:.0f} KB) via {command}"
                 )
                 if not passed:
                     details += " - espace insuffisant"
-                return {"name": self.name, "passed": passed, "details": details}
+                return {
+                    "name": self.name,
+                    "passed": passed,
+                    "details": details,
+                }
 
             if free_kb is None and firmwares:
                 firmware_name, firmware_size = max(firmwares, key=lambda item: item[1])
@@ -110,13 +129,23 @@ class StorageCapacityRule(BaseAuditRule):
                     f"Firmware {firmware_name} ({firmware_size} B) détecté via {command}"
                     " - incapacité à vérifier l'espace libre"
                 )
-                return {"name": self.name, "passed": False, "details": details}
+                return {
+                    "name": self.name,
+                    "passed": False,
+                    "details": details,
+                }
 
             if free_kb is not None and not firmwares:
                 return {
                     "name": self.name,
                     "passed": True,
-                    "details": f"Libre: {free_kb} KB - aucun firmware détecté via {command}",
+                    "details": (
+                        f"Libre: {free_kb} KB - aucun firmware détecté via {command}"
+                    ),
                 }
 
-        return {"name": self.name, "passed": False, "details": "Aucune information de stockage exploitable"}
+        return {
+            "name": self.name,
+            "passed": False,
+            "details": "Aucune information de stockage exploitable",
+        }

@@ -6,7 +6,12 @@ import re
 from typing import List, Optional, Tuple
 
 from .base_rules import BaseAuditRule
-from ..utils import disable_paging, normalize_list, run_command_with_paging
+from ..utils import (
+    disable_paging,
+    normalize_list,
+    resolve_disable_paging_commands,
+    run_command_with_paging,
+)
 
 
 def _is_separator(line: str) -> bool:
@@ -51,7 +56,10 @@ def _slice(line: str, start: int, end: int) -> str:
     return line[start:min(end, len(line))].strip()
 
 
-def _find_column(columns: List[Tuple[str, int, int]], keys: List[str]) -> Optional[Tuple[int, int]]:
+def _find_column(
+    columns: List[Tuple[str, int, int]],
+    keys: List[str],
+) -> Optional[Tuple[int, int]]:
     for key in keys:
         for name, start, end in columns:
             if key in name:
@@ -59,7 +67,9 @@ def _find_column(columns: List[Tuple[str, int, int]], keys: List[str]) -> Option
     return None
 
 
-def _parse_table(lines: List[str]) -> Tuple[List[float], Optional[float], Optional[float], Optional[float]]:
+def _parse_table(
+    lines: List[str],
+) -> Tuple[List[float], Optional[float], Optional[float], Optional[float]]:
     header_index = None
     for idx, line in enumerate(lines):
         low = line.lower()
@@ -105,7 +115,10 @@ def _parse_table(lines: List[str]) -> Tuple[List[float], Optional[float], Option
             (lower_span, lowers),
         ):
             if span:
-                value_match = re.search(r"-?\d+(?:\.\d+)?", _slice(line, *span))
+                value_match = re.search(
+                    r"-?\d+(?:\.\d+)?",
+                    _slice(line, *span),
+                )
                 if value_match:
                     container.append(float(value_match.group(0)))
 
@@ -118,11 +131,23 @@ def _parse_table(lines: List[str]) -> Tuple[List[float], Optional[float], Option
     return temps, lower, warn, alarm
 
 
-def _parse_text(output: str) -> Tuple[List[float], Optional[float], Optional[float], Optional[float]]:
-    temps = [float(m.group(1)) for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s*°?\s*C", output, re.IGNORECASE)]
+def _parse_text(
+    output: str,
+) -> Tuple[List[float], Optional[float], Optional[float], Optional[float]]:
+    temps = [
+        float(match.group(1))
+        for match in re.finditer(
+            r"(-?\d+(?:\.\d+)?)\s*°?\s*C",
+            output,
+            re.IGNORECASE,
+        )
+    ]
 
     def grab(tag: str) -> Optional[float]:
-        match = re.search(fr"{tag}[^0-9-]*(-?\d+(?:\.\d+)?)\s*°?\s*C", output, re.IGNORECASE)
+        pattern = (
+            fr"{tag}[^0-9-]*(-?\d+(?:\.\d+)?)\s*°?\s*C"
+        )
+        match = re.search(pattern, output, re.IGNORECASE)
         return float(match.group(1)) if match else None
 
     warn = grab("warning") or grab("upper")
@@ -131,7 +156,9 @@ def _parse_text(output: str) -> Tuple[List[float], Optional[float], Optional[flo
     return temps, lower, warn, alarm
 
 
-def parse_temperatures(output: str) -> Tuple[List[float], Optional[float], Optional[float], Optional[float]]:
+def parse_temperatures(
+    output: str,
+) -> Tuple[List[float], Optional[float], Optional[float], Optional[float]]:
     lines = output.splitlines()
     temps, lower, warn, alarm = _parse_table(lines)
     if temps or any(v is not None for v in (lower, warn, alarm)):
@@ -147,15 +174,26 @@ class TemperatureRule(BaseAuditRule):
     def run(self, info: dict) -> dict:
         connection = info.get("connection") or info.get("shell")
         if connection is None:
-            return {"name": self.name, "passed": False, "details": "Connexion SSH indisponible"}
+            return {
+                "name": self.name,
+                "passed": False,
+                "details": "Connexion SSH indisponible",
+            }
 
-        disable_paging(
-            connection,
-            normalize_list(self.config.get("disable_paging", "screen-length 0 temporary,screen-length disable")),
+        disable_commands = resolve_disable_paging_commands(
+            info.get("device_type"),
+            self.config.get(
+                "disable_paging",
+                "screen-length disable,screen-length 0 temporary",
+            ),
         )
+        disable_paging(connection, disable_commands)
 
         commands = normalize_list(
-            self.config.get("commands", "display temperature all,display env,display environment")
+            self.config.get(
+                "commands",
+                "display temperature all,display env,display environment",
+            )
         )
 
         for command in commands:
@@ -168,7 +206,10 @@ class TemperatureRule(BaseAuditRule):
                 continue
 
             thresholds = [value for value in (warn, alarm) if value is not None]
-            threshold = min(thresholds) if thresholds else float(self.config.get("default_threshold", 60))
+            if thresholds:
+                threshold = min(thresholds)
+            else:
+                threshold = float(self.config.get("default_threshold", 60))
             max_temp = max(temps)
             passed = max_temp <= threshold
 
@@ -183,6 +224,14 @@ class TemperatureRule(BaseAuditRule):
             if not passed:
                 details += " - dépassement de seuil"
 
-            return {"name": self.name, "passed": passed, "details": details}
+            return {
+                "name": self.name,
+                "passed": passed,
+                "details": details,
+            }
 
-        return {"name": self.name, "passed": False, "details": "Aucune mesure de température disponible"}
+        return {
+            "name": self.name,
+            "passed": False,
+            "details": "Aucune mesure de température disponible",
+        }

@@ -6,18 +6,34 @@ import re
 from typing import Optional, Tuple
 
 from .base_rules import BaseAuditRule
-from ..utils import disable_paging, normalize_list, run_command_with_paging
+from ..utils import (
+    disable_paging,
+    normalize_list,
+    resolve_disable_paging_commands,
+    run_command_with_paging,
+)
 
 
 def analyse_fans(output: str) -> Tuple[Optional[int], Optional[int]]:
     lines = output.strip().splitlines()
-    relevant = [line for line in lines if re.search(r"(Normal|Abnormal|Faulty|Absent)", line, re.IGNORECASE)]
+    relevant = [
+        line
+        for line in lines
+        if re.search(
+            r"(Normal|Abnormal|Faulty|Absent)",
+            line,
+            re.IGNORECASE,
+        )
+    ]
     total = len(relevant)
     ok = sum(1 for line in relevant if re.search(r"Normal", line, re.IGNORECASE))
     if total > 0:
         return ok, total
 
-    failure_match = re.search(r"(\d+)\s*/\s*(\d+)\s*Fans in Failure State", output)
+    failure_match = re.search(
+        r"(\d+)\s*/\s*(\d+)\s*Fans in Failure State",
+        output,
+    )
     if failure_match:
         ko = int(failure_match.group(1))
         total = int(failure_match.group(2))
@@ -38,14 +54,27 @@ class FanHealthRule(BaseAuditRule):
     def run(self, info: dict) -> dict:
         connection = info.get("connection") or info.get("shell")
         if connection is None:
-            return {"name": self.name, "passed": False, "details": "Connexion SSH indisponible"}
+            return {
+                "name": self.name,
+                "passed": False,
+                "details": "Connexion SSH indisponible",
+            }
 
-        disable_paging(
-            connection,
-            normalize_list(self.config.get("disable_paging", "screen-length disable,screen-length 0 temporary,no page")),
+        disable_commands = resolve_disable_paging_commands(
+            info.get("device_type"),
+            self.config.get(
+                "disable_paging",
+                "screen-length disable,screen-length 0 temporary,no page",
+            ),
         )
+        disable_paging(connection, disable_commands)
 
-        commands = normalize_list(self.config.get("commands", "display fan,display device,show system fans"))
+        commands = normalize_list(
+            self.config.get(
+                "commands",
+                "display fan,display device,show system fans",
+            )
+        )
 
         for command in commands:
             output = run_command_with_paging(connection, command)
@@ -54,7 +83,11 @@ class FanHealthRule(BaseAuditRule):
                 passed = total == 0 or ok == total
                 if total == 0:
                     details = f"Aucun ventilateur détecté via {command}"
-                    return {"name": self.name, "passed": True, "details": details}
+                    return {
+                        "name": self.name,
+                        "passed": True,
+                        "details": details,
+                    }
 
                 details = (
                     f"Ventilateurs {ok}/{total} OK via {command}"
@@ -65,6 +98,14 @@ class FanHealthRule(BaseAuditRule):
                 if not passed:
                     details += " - vérifier les modules de refroidissement"
 
-                return {"name": self.name, "passed": passed, "details": details}
+                return {
+                    "name": self.name,
+                    "passed": passed,
+                    "details": details,
+                }
 
-        return {"name": self.name, "passed": False, "details": "Aucune donnée ventilateurs exploitable"}
+        return {
+            "name": self.name,
+            "passed": False,
+            "details": "Aucune donnée ventilateurs exploitable",
+        }
