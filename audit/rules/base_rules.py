@@ -1,23 +1,22 @@
-#!/usr/bin/env python3
+"""Bases communes aux règles d'audit."""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import Any, Dict
+
 
 class BaseAuditRule(ABC):
-    """
-    Classe de base pour une règle d'audit.
+    """Classe de base pour une règle d'audit configurable."""
 
-    Chaque règle doit définir :
-      - name (str)
-      - run(self, info: dict) -> dict
-
-    Le résultat retourné doit être un dict :
-      {"name": <rule_name>, "passed": <bool>, "details": <str>}
-    """
+    def __init__(self, config: Dict[str, Any] | None = None) -> None:
+        self.config: Dict[str, Any] = config or {}
 
     @property
     @abstractmethod
     def name(self) -> str:
-        pass
+        """Nom unique de la règle (utilisé pour l'activation)."""
 
     @abstractmethod
     def run(self, info: dict) -> dict:
-        pass
+        """Exécute la règle et retourne un dictionnaire de résultat."""
