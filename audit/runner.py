@@ -1,74 +1,93 @@
-#!/usr/bin/env python3
-# audit/runner.py
+"""Exécution centralisée des règles d'audit."""
 
+from __future__ import annotations
+
+import logging
 import time
+from pathlib import Path
+from typing import Iterable, List
+
+from .config_loader import load_rule_config
 from .discovery import discover_device
-from .rules.sysname import SysnameRule
-from .rules.tacacs import TacacsRule
-from .rules.snmp_v3_test import SnmpV3CheckRule
-from .rules.snmp_trap_check import SnmpTrapCheckRule
+from .rules import RULE_REGISTRY
+from .rules.base_rules import BaseAuditRule
 
-ALL_RULES = {
-    rule.name: rule
-    for rule in (SysnameRule(), TacacsRule(), SnmpV3CheckRule(), SnmpTrapCheckRule())
-}
+LOGGER = logging.getLogger(__name__)
 
-def run_audit(ip: str, username: str, password: str, rules_to_run_list=None, snmp_credentials_from_main=None) -> dict:
+
+def instantiate_rules(rule_names: Iterable[str], config_dir: Path) -> List[BaseAuditRule]:
+    instances = []
+    for name in rule_names:
+        if name not in RULE_REGISTRY:
+            raise KeyError(f"Règle inconnue: {name}")
+        rule_class = RULE_REGISTRY[name]
+        config = load_rule_config(name, config_dir)
+        instances.append(rule_class(config=config))
+    return instances
+
+
+def run_audit(
+    ip: str,
+    username: str,
+    password: str,
+    rules_to_run_list: Iterable[BaseAuditRule],
+    snmp_credentials_from_main: dict | None = None,
+) -> dict:
     start_time = time.time()
-    
-    effective_rules = rules_to_run_list if rules_to_run_list is not None else list(ALL_RULES.values())
-    
-    result = {"ip": ip, "duration": 0, "hostname": "N/A", "model": "N/A", "firmware": "N/A"}
-    for rule_obj in effective_rules:
-        result[f"{rule_obj.name}_compliant"] = False
-        result[f"{rule_obj.name}_details"] = "Not run or discovery failed"
 
-    device_info_dict = None
+    result = {"ip": ip, "duration": 0, "hostname": "N/A", "model": "N/A", "firmware": "N/A"}
+    for rule_obj in rules_to_run_list:
+        result[f"{rule_obj.name}_compliant"] = False
+        result[f"{rule_obj.name}_details"] = "Règle non exécutée"
+
     try:
-        device_info_dict = discover_device(ip, username, password)
-    except Exception as e:
-        result["model"] = f"Discovery Error: {e}"
+        device_info = discover_device(ip, username, password)
+    except Exception as exc:  # pragma: no cover - dépend de netmiko
+        LOGGER.error("Découverte échouée pour %s: %s", ip, exc)
+        result["model"] = f"Discovery Error: {exc}"
         result["duration"] = round(time.time() - start_time, 1)
         return result
 
-    if device_info_dict and isinstance(device_info_dict, dict):
-        result.update({
-            "hostname": str(device_info_dict.get("hostname", "N/A")),
-            "model":    str(device_info_dict.get("model", "N/A")),
-            "firmware": str(device_info_dict.get("firmware", "N/A"))
-        })
+    if not isinstance(device_info, dict):
+        result["model"] = "Discovery Failed"
+        result["duration"] = round(time.time() - start_time, 1)
+        return result
 
-        # Injecter les credentials SNMP dans device_info_dict
-        if snmp_credentials_from_main and isinstance(snmp_credentials_from_main, dict):
-            device_info_dict.update(snmp_credentials_from_main)
+    result.update(
+        {
+            "hostname": str(device_info.get("hostname", "N/A")),
+            "model": str(device_info.get("model", "N/A")),
+            "firmware": str(device_info.get("firmware", "N/A")),
+        }
+    )
 
-        # Vérification explicite de la connexion
-        connection_ssh = device_info_dict.get("connection")
-        if connection_ssh:
-            device_info_dict["shell"] = connection_ssh
-        else:
-            print(f"✗ No SSH connection available for {ip}")
-            result["model"] = "No SSH connection"
-            result["duration"] = round(time.time() - start_time, 1)
-            return result
+    if snmp_credentials_from_main:
+        device_info.update(snmp_credentials_from_main)
 
-        for rule_obj in effective_rules:
-            try:
-                rule_result = rule_obj.run(device_info_dict)
-                result[f"{rule_obj.name}_compliant"] = bool(rule_result.get("passed", False))
-                result[f"{rule_obj.name}_details"] = str(rule_result.get("details", "Rule returned no details"))
-            except Exception as e:
-                print(f"ERROR: Rule '{rule_obj.name}' on {ip} raised an exception: {e}")
-                result[f"{rule_obj.name}_compliant"] = False
-                result[f"{rule_obj.name}_details"] = f"Rule execution error: {e}"
+    connection = device_info.get("connection")
+    if connection is None:
+        LOGGER.warning("Aucune connexion SSH pour %s", ip)
+        result["model"] = "No SSH connection"
+        result["duration"] = round(time.time() - start_time, 1)
+        return result
 
-        if connection_ssh and hasattr(connection_ssh, 'disconnect'):
-            try:
-                connection_ssh.disconnect()
-            except Exception as e:
-                print(f"Error disconnecting SSH from {ip}: {e}")
-    else:
-        result["model"] = "Discovery Failed (device_info_dict is None or not a dict)"
+    device_info["shell"] = connection
+
+    for rule_obj in rules_to_run_list:
+        try:
+            rule_result = rule_obj.run(device_info)
+            result[f"{rule_obj.name}_compliant"] = bool(rule_result.get("passed", False))
+            result[f"{rule_obj.name}_details"] = str(rule_result.get("details", ""))
+        except Exception as exc:  # pragma: no cover - dépend équipement
+            LOGGER.exception("Erreur lors de l'exécution de %s sur %s", rule_obj.name, ip)
+            result[f"{rule_obj.name}_compliant"] = False
+            result[f"{rule_obj.name}_details"] = f"Erreur de règle: {exc}"
+
+    try:
+        if hasattr(connection, "disconnect"):
+            connection.disconnect()
+    except Exception as exc:  # pragma: no cover - dépend netmiko
+        LOGGER.debug("Erreur lors de la déconnexion de %s: %s", ip, exc)
 
     result["duration"] = round(time.time() - start_time, 1)
     return result

@@ -1,6 +1,13 @@
-#!/usr/bin/env python3
-from .base_rules import BaseAuditRule
+"""Contrôle de la configuration SNMP trap."""
+
+from __future__ import annotations
+
 import re
+from typing import List
+
+from .base_rules import BaseAuditRule
+from ..utils import disable_paging, first_successful_command, normalize_list
+
 
 class SnmpTrapCheckRule(BaseAuditRule):
     @property
@@ -8,86 +15,52 @@ class SnmpTrapCheckRule(BaseAuditRule):
         return "snmp_trap_check"
 
     def run(self, info: dict) -> dict:
-        shell = info.get("shell")
-        if not shell:
-            return {"passed": False, "details": f"Shell SSH non fourni. Info: {info}"}
+        connection = info.get("connection") or info.get("shell")
+        if connection is None:
+            return {"name": self.name, "passed": False, "details": "Connexion SSH indisponible"}
 
-        try:
-            success, output = self._execute_command(shell, "dis cur | inc snmp")
-            if not success:
-                return {"passed": False, "details": "Échec lors de l'exécution de la commande 'dis cur | inc snmp'."}
+        disable_commands = normalize_list(self.config.get("disable_paging", "screen-length 0 temporary,screen-length disable,no page"))
+        disable_paging(connection, disable_commands)
 
-            if info.get("marque", "").lower() != "huawei":
-                success, extra_output = self._execute_command(shell, "dis snmp-agent trap-list")
-                if not success:
-                    return {"passed": False, "details": "Échec lors de l'exécution de la commande 'dis snmp-agent trap-list'."}
-                output += "\n" + extra_output
+        commands = normalize_list(self.config.get("commands", "display current-configuration | include snmp"))
+        fallback = normalize_list(self.config.get("fallback_commands", "display snmp-agent trap-list"))
 
-            passed, details = self._analyze_snmp_traps(output, info.get("marque", ""), info.get("type", ""), info.get("comware_version", ""))
-            return {"passed": passed, "details": details}
+        used_cmd, output = first_successful_command(connection, commands)
+        if not output and fallback:
+            used_cmd, output = first_successful_command(connection, fallback)
 
-        except Exception as e:
-            return {"passed": False, "details": f"Erreur inattendue : {str(e)}"}
+        if not output:
+            return {
+                "name": self.name,
+                "passed": False,
+                "details": "Impossible de récupérer la configuration SNMP"
+            }
 
-    def _execute_command(self, shell, command):
-        """
-        Exécute une commande sur le shell SSH et retourne le résultat, en gérant la pagination.
-        """
-        try:
-            # Envoi de la commande initiale
-            output = shell.send_command_timing(command)
-            
-            # Gestion de la pagination
-            while "---- More ----" in output:
-                output += shell.send_command_timing(" ")  # Envoi d'un espace pour continuer la sortie
-            
-            return True, output
-        except Exception as e:
-            return False, str(e)
+        targets = normalize_list(self.config.get("required_targets", ""))
+        issues = analyse_traps(output, targets)
 
-    def _analyze_snmp_traps(self, output, type_equipement, marque, comware_version):
-        """
-        Analyse la configuration SNMP pour vérifier la conformité des traps.
-        """
-        lines = output.split("\n")
-        lines = [line.strip() for line in lines if line.strip()]  # Supprime les lignes vides
+        passed = not issues
+        detail_msg = "; ".join(issues) if issues else f"Configuration SNMP conforme (commande: {used_cmd})"
+        return {"name": self.name, "passed": passed, "details": detail_msg}
 
-        if len(lines) < 3:
-            return False, "Configuration SNMP incomplète ou équipement trop lent à répondre."
 
-        # Initialisation des variables
-        trap_enable = False
-        target_host_2941 = False
-        target_host_30166 = False
-        issues = []
+def analyse_traps(output: str, required_targets: List[str]) -> List[str]:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return ["Configuration SNMP incomplète ou sortie vide"]
 
-        # Analyse des lignes de configuration
-        for line in lines:
-            if re.search("---- More ----", line):
-                return False, "Pagination détectée dans la sortie, commande non terminée."
+    issues: List[str] = []
+    trap_enabled = any(re.search(r"snmp-agent\s+trap\s+enable", line, re.IGNORECASE) for line in lines)
+    if not trap_enabled:
+        issues.append("Trap SNMP non activé")
 
-            if not trap_enable and re.search(r"snmp-agent trap enable", line):
-                trap_enable = True
+    for target in required_targets:
+        pattern = rf"snmp-agent\s+target-host.*{re.escape(target)}"
+        if not any(re.search(pattern, line, re.IGNORECASE) for line in lines):
+            issues.append(f"Trap vers {target} manquant")
 
-            if re.search(r"snmp-agent target-host.*10\.105\.29\.41", line):
-                target_host_2941 = True
+    pagination_detected = any("---- More ----" in line for line in lines)
+    if pagination_detected:
+        issues.append("Pagination détectée : relancer la commande avec pagination désactivée")
 
-            if re.search(r"snmp-agent target-host.*10\.105\.30\.166", line):
-                target_host_30166 = True
-
-            # Vérifications spécifiques à Huawei
-            if marque == "huawei":
-                if type_equipement == "lmz" and re.search(r"undo snmp-agent trap enable", line):
-                    issues.append(f"Ligne non conforme détectée : {line}")
-
-        # Vérifications finales
-        if not trap_enable:
-            issues.append("Trap SNMP non activé (snmp-agent trap enable manquant).")
-        if not target_host_2941:
-            issues.append("Trap vers 10.105.29.41 manquant.")
-        if not target_host_30166:
-            issues.append("Trap vers 10.105.30.166 manquant.")
-
-        if issues:
-            return False, "; ".join(issues)
-        return True, "Configuration SNMP conforme."
+    return issues

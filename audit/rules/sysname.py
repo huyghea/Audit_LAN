@@ -1,6 +1,12 @@
-#!/usr/bin/env python3
-from .base_rules import BaseAuditRule
+"""Validation de la nomenclature des noms d'hôtes."""
+
+from __future__ import annotations
+
 import re
+from typing import List
+
+from .base_rules import BaseAuditRule
+
 
 class SysnameRule(BaseAuditRule):
     @property
@@ -8,17 +14,22 @@ class SysnameRule(BaseAuditRule):
         return "sysname"
 
     def run(self, info: dict) -> dict:
-        hostname = str(info.get("hostname", "")).upper()  # Assurez-vous que hostname est une chaîne
-        # Vérification des règles
-        passed = (
-            hostname.startswith("NETW") or
-            hostname.startswith("LMZFR") or
-            hostname.startswith("CLM-") or
-            bool(re.match(r"^R\d{2}[A-Z0-9\-]*$", hostname))  # Convertir le résultat en booléen
-        )
+        hostname = str(info.get("hostname", "")).upper()
+
+        prefixes = _split_csv(self.config.get("prefixes", ""))
+        patterns = _split_csv(self.config.get("patterns", ""))
+
+        allowed = any(hostname.startswith(prefix.upper()) for prefix in prefixes if prefix)
+        if not allowed:
+            allowed = any(re.fullmatch(pattern, hostname) for pattern in patterns if pattern)
+
         details = (
-            f"Hostname '{str(info.get('hostname'))}' is compliant"
-            if passed else
-            f"Hostname '{str(info.get('hostname'))}' is not compliant"
+            f"Hostname '{info.get('hostname', 'N/A')}' conforme aux règles"
+            if allowed
+            else f"Hostname '{info.get('hostname', 'N/A')}' hors référentiel"
         )
-        return {"name": self.name, "passed": passed, "details": details}
+        return {"name": self.name, "passed": allowed, "details": details}
+
+
+def _split_csv(raw: str) -> List[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
