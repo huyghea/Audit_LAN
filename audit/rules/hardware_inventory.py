@@ -80,7 +80,9 @@ class HardwareInventoryRule(BaseAuditRule):
 
     def run(self, info: dict) -> dict:
         inventory_cache = info.get("hardware_inventory")
+        cached_command = ""
         if isinstance(inventory_cache, dict):
+            cached_command = str(inventory_cache.get("command") or "").strip().lower()
             cached = self._result_from_cache(inventory_cache)
             if cached is not None:
                 return cached
@@ -111,6 +113,9 @@ class HardwareInventoryRule(BaseAuditRule):
 
         tried = []
         for command in commands:
+            normalized = command.strip().lower()
+            if normalized and normalized == cached_command:
+                continue
             tried.append(command)
             output = clean_cli_output(run_command_with_paging(connection, command))
             if not output or INVALID_PATTERN.search(output):

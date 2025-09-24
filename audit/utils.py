@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable, List, Sequence
 
 LOGGER = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ def resolve_disable_paging_commands(
 
     return list(DEFAULT_DISABLE_PAGING_BY_VENDOR["default"])
 
+  
 def parse_rules_argument(raw: Iterable[str] | str | None) -> List[str]:
     """Convertit l'entrée CLI/configuration en liste de règles sans doublon."""
 
@@ -83,15 +85,47 @@ def parse_rules_argument(raw: Iterable[str] | str | None) -> List[str]:
         cleaned.append(key)
     return cleaned
 
+_PAGING_ERROR_PATTERN = re.compile(
+    r"(unrecognized|invalid|unknown\s+command|incomplete|syntax\s+error)",
+    re.IGNORECASE,
+)
+
+
+def _is_error_output(output: str) -> bool:
+    """Détermine si la sortie indique une commande invalide."""
+
+    if not output:
+        return False
+    return bool(_PAGING_ERROR_PATTERN.search(output))
+
 
 def disable_paging(connection, commands: Sequence[str]) -> None:
-    """Désactive la pagination sur la connexion Netmiko fournie."""
+    """Désactive la pagination en évitant les répétitions inutiles."""
+
+    if getattr(connection, "_audit_paging_disabled", False):
+        return
+
+    already_tried = getattr(connection, "_audit_disable_paging_attempts", set())
+    updated = False
 
     for command in commands:
+        normalized = command.strip().lower()
+        if not normalized or normalized in already_tried:
+            continue
+        already_tried.add(normalized)
+        updated = True
         try:
-            connection.send_command_timing(command)
+            output = connection.send_command_timing(command)
         except Exception:  # pragma: no cover - dépend de l'équipement
             continue
+        if _is_error_output(output):
+            continue
+        setattr(connection, "_audit_paging_disabled", True)
+        setattr(connection, "_audit_disable_paging_attempts", already_tried)
+        return
+
+    if updated:
+        setattr(connection, "_audit_disable_paging_attempts", already_tried)
 
 
 def run_command_with_paging(

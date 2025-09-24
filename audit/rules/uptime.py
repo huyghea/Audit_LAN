@@ -82,6 +82,34 @@ class UptimeRule(BaseAuditRule):
                 "details": "Connexion SSH indisponible",
             }
 
+        threshold = int(self.config.get("minimum_seconds", 86400))
+
+        inventory_cache = info.get("hardware_inventory")
+        cached_command = ""
+        cached_source = "découverte initiale"
+        if isinstance(inventory_cache, dict):
+            cached_command = str(inventory_cache.get("command") or "").strip().lower()
+            cached_source = str(inventory_cache.get("command") or cached_source)
+            cached_output = str(inventory_cache.get("raw_output") or "")
+            if cached_output:
+                uptime_str, reason, total_seconds = parse_uptime(cached_output)
+                if uptime_str is not None:
+                    passed = total_seconds >= threshold
+                    if passed:
+                        details = (
+                            f"Uptime {uptime_str} (raison reboot: {reason}) via {cached_source}"
+                        )
+                    else:
+                        hours = threshold // 3600
+                        details = (
+                            f"Reboot récent ({uptime_str}) - seuil {hours}h via {cached_source}"
+                        )
+                    return {
+                        "name": self.name,
+                        "passed": passed,
+                        "details": details,
+                    }
+
         disable_commands = resolve_disable_paging_commands(
             info.get("device_type"),
             self.config.get("disable_paging", "screen-length disable"),
@@ -96,6 +124,9 @@ class UptimeRule(BaseAuditRule):
         )
 
         for command in commands:
+            normalized = command.strip().lower()
+            if normalized and normalized == cached_command:
+                continue
             output = run_command_with_paging(connection, command)
             if not output:
                 continue
@@ -104,7 +135,6 @@ class UptimeRule(BaseAuditRule):
             if uptime_str is None:
                 continue
 
-            threshold = int(self.config.get("minimum_seconds", 86400))
             passed = total_seconds >= threshold
             if passed:
                 details = (

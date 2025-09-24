@@ -17,8 +17,12 @@ from audit.rules.power_supply import analyse_power
 from audit.rules.storage_capacity import extract_disk_usage, extract_firmwares
 from audit.rules.temperature import parse_temperatures
 from audit.rules.transceiver_diagnostics import parse_transceivers
-from audit.rules.uptime import parse_uptime
-from audit.utils import parse_rules_argument, resolve_disable_paging_commands
+from audit.rules.uptime import UptimeRule, parse_uptime
+from audit.utils import (
+    disable_paging,
+    parse_rules_argument,
+    resolve_disable_paging_commands,
+)
 
 
 class ParserTests(unittest.TestCase):
@@ -111,7 +115,43 @@ class ParserTests(unittest.TestCase):
         self.assertIn("no page", defaults)
         custom = resolve_disable_paging_commands("huawei", "undo page,no page")
         self.assertEqual(custom, ["undo page", "no page"])
+        
+    def test_disable_paging_stops_after_success(self) -> None:
+        class DummyConnection:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
 
+            def send_command_timing(self, command: str) -> str:
+                self.commands.append(command)
+                if command == "screen-length disable":
+                    return ""
+                return "Command not supported"
+
+        connection = DummyConnection()
+        disable_paging(connection, ["screen-length disable", "no page"])
+        self.assertEqual(connection.commands, ["screen-length disable"])
+
+        disable_paging(connection, ["screen-length disable", "no page"])
+        self.assertEqual(connection.commands, ["screen-length disable"])
+
+    def test_disable_paging_retry_new_command_only(self) -> None:
+        class DummyConnection:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def send_command_timing(self, command: str) -> str:
+                self.commands.append(command)
+                if command == "terminal length 0":
+                    return ""
+                return "Unrecognized command"
+
+        connection = DummyConnection()
+        disable_paging(connection, ["no page"])
+        disable_paging(connection, ["no page", "terminal length 0"])
+        self.assertEqual(
+            connection.commands,
+            ["no page", "terminal length 0"],
+        )
     def test_hardware_inventory_cache(self) -> None:
         rule = HardwareInventoryRule(config={})
         cache = {
@@ -129,6 +169,67 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertIn("2930F", result["details"])
         self.assertIn("via display version", result["details"])
+
+    def test_hardware_inventory_skips_cached_command(self) -> None:
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def send_command_timing(self, command: str) -> str:
+                self.commands.append(command)
+                outputs = {
+                    "show system": (
+                        "Device model : Switch 5120\n"
+                        "Software Version : 5.20 Release 1519P02\n"
+                    )
+                }
+                return outputs.get(command, "")
+
+        rule = HardwareInventoryRule(
+            config={
+                "commands": "display version,show system",
+                "disable_paging": "",
+            }
+        )
+        cache = {
+            "model": "N/A",
+            "version": "N/A",
+            "command": "display version",
+            "raw_output": "Software Version : unknown",
+        }
+        connection = FakeConnection()
+        result = rule.run({
+            "connection": connection,
+            "hardware_inventory": cache,
+        })
+        self.assertTrue(result["passed"])
+        self.assertNotIn("display version", connection.commands)
+
+    def test_uptime_uses_cached_inventory(self) -> None:
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def send_command_timing(self, command: str) -> str:
+                self.commands.append(command)
+                return ""
+
+        rule = UptimeRule(config={"minimum_seconds": "0"})
+        cache = {
+            "command": "display version",
+            "raw_output": (
+                "Uptime is 1 weeks, 0 days, 0 hours, 0 minutes\n"
+                "Last reboot reason : planned maintenance"
+            ),
+        }
+        connection = FakeConnection()
+        result = rule.run({
+            "connection": connection,
+            "hardware_inventory": cache,
+        })
+        self.assertTrue(result["passed"])
+        self.assertEqual(connection.commands, [])
+
 
 if __name__ == "__main__":
     unittest.main()

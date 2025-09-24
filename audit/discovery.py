@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional
+
 
 from netmiko import NetmikoAuthenticationException, NetmikoTimeoutException
 from netmiko.ssh_autodetect import SSHDetect
 
 from .connection import connect_device
 from .parsers import clean_cli_output, extract_model, extract_version_and_firmware
+from .utils import (
+    disable_paging as apply_disable_paging,
+    resolve_disable_paging_commands,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -93,27 +98,9 @@ def _autodetect_vendor(ip: str, username: str, password: str) -> Optional[str]:
 
 
 def _disable_paging(connection, vendor: str) -> None:
-    if vendor == "hp_comware":
-        commands: Iterable[str] = (
-            "screen-length 0 temporary disable",
-            "screen-length 0",
-        )
-    elif vendor == "huawei":
-        commands = ("screen-length 0 temporary", "screen-length 0")
-    else:
-        commands = ("no page",)
+    commands = resolve_disable_paging_commands(vendor, None)
+    apply_disable_paging(connection, commands)
 
-    for command in commands:
-        try:
-            connection.send_command(
-                command,
-                expect_string=PROMPT_PATTERN,
-                strip_prompt=True,
-                strip_command=True,
-                read_timeout=2,
-            )
-        except Exception:  # pragma: no cover - dépend équipement
-            continue
 
 
 def _collect_device_info(
