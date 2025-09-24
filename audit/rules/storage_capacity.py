@@ -13,7 +13,6 @@ from ..utils import (
     run_command_with_paging,
 )
 
-
 def extract_disk_usage(output: str) -> Tuple[Optional[int], Optional[int]]:
     for line in output.splitlines():
         match = re.search(

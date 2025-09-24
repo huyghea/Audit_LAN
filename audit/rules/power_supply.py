@@ -111,6 +111,7 @@ class PowerSupplyRule(BaseAuditRule):
             if absent > 0 and passed:
                 passed = False
 
+
             if passed:
                 details = f"Alimentations OK {ok}/{total} via {command}"
             else:

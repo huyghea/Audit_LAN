@@ -130,6 +130,5 @@ class ParserTests(unittest.TestCase):
         self.assertIn("2930F", result["details"])
         self.assertIn("via display version", result["details"])
 
-
 if __name__ == "__main__":
     unittest.main()

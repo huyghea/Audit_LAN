@@ -13,7 +13,6 @@ from ..utils import (
     run_command_with_paging,
 )
 
-
 def parse_uptime(output: str) -> tuple[Optional[str], Optional[str], int]:
     reason_match = re.search(
         r"(Last\s+reboot\s+reason\s*:\s*(.+))|(Reboot\s+Cause\s*:\s*(.+))",

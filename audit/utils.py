@@ -55,7 +55,6 @@ def resolve_disable_paging_commands(
 
     return list(DEFAULT_DISABLE_PAGING_BY_VENDOR["default"])
 
-
 def parse_rules_argument(raw: Iterable[str] | str | None) -> List[str]:
     """Convertit l'entrée CLI/configuration en liste de règles sans doublon."""
 
