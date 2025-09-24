@@ -1,144 +1,164 @@
-#!/usr/bin/env python3
-# main.py
+"""Orchestrateur des audits réseau."""
 
-import os
+from __future__ import annotations
+
+import argparse
 import csv
 import getpass
-import argparse
-from datetime import datetime
+import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from report.dashboard import generate_html_dashboard
-from audit.runner import run_audit, ALL_RULES
+from datetime import datetime
+from pathlib import Path
+from typing import List
 
-def load_ips(path="config/ips.txt"):
+from audit.config_loader import load_main_config
+from audit.runner import instantiate_rules, run_audit
+from audit.rules import RULE_REGISTRY
+from audit.utils import parse_rules_argument
+from report.dashboard import generate_html_dashboard
+
+DEFAULT_CONFIG = Path("config") / "main.ini"
+
+
+def load_ips(path: Path) -> List[str]:
     try:
-        with open(path) as f:
-            return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        with path.open(encoding="utf-8") as handle:
+            return [line.strip() for line in handle if line.strip() and not line.startswith("#")]
     except FileNotFoundError:
-        print(f"Error: IP file not found at {path}")
+        logging.error("Fichier IP introuvable: %s", path)
         return []
 
-def main():
-    parser = argparse.ArgumentParser(description="Parallel audit (selective rules)")
-    parser.add_argument("-u", "--username", required=True, help="SSH username")
-    parser.add_argument("-p", "--password", required=False, help="SSH password (prompt if not provided)")
-    parser.add_argument("-i", "--ips", default="config/ips.txt", help="IPs file (default: config/ips.txt)")
-    parser.add_argument("-r", "--rules", default=None,
-                        help=f"Comma-separated list of rules (choices: {','.join(ALL_RULES.keys())}). All if absent.")
-    parser.add_argument("-o", "--output", default=None, help="CSV output file (default: results/audit_YYYYMMDD_HHMMSS.csv)")
-    parser.add_argument("-w", "--workers", type=int, default=100, help="Number of parallel workers (default: 100)")
 
-    parser.add_argument("--snmp-user", default=os.environ.get("SNMP_USER"), help="SNMPv3 username (or ENV: SNMP_USER)")
-    parser.add_argument("--snmp-auth-key", default=os.environ.get("SNMP_AUTH_KEY"), help="SNMPv3 auth key (or ENV: SNMP_AUTH_KEY)")
-    parser.add_argument("--snmp-priv-key", default=os.environ.get("SNMP_PRIV_KEY"), help="SNMPv3 priv key (or ENV: SNMP_PRIV_KEY)")
-    parser.add_argument("--snmp-auth-proto", default=os.environ.get("SNMP_AUTH_PROTO", "SHA"), help="SNMPv3 auth protocol (default: SHA, or ENV: SNMP_AUTH_PROTO)")
-    parser.add_argument("--snmp-priv-proto", default=os.environ.get("SNMP_PRIV_PROTO", "AES"), help="SNMPv3 priv protocol (default: AES, or ENV: SNMP_PRIV_PROTO)")
+def configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Orchestrateur d'audits réseau modulaire")
+    parser.add_argument("-u", "--username", required=True, help="Nom d'utilisateur SSH")
+    parser.add_argument("-p", "--password", help="Mot de passe SSH (sinon saisie interactive)")
+    parser.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG, help="Fichier de configuration .ini")
+    parser.add_argument(
+        "-r",
+        "--rules",
+        nargs="+",
+        help="Règles à exécuter (noms séparés par un espace ou une virgule; 'all' pour tout exécuter)",
+    )
+    parser.add_argument("--list-rules", action="store_true", help="Affiche les règles disponibles puis quitte")
+    parser.add_argument("-i", "--ips", type=Path, help="Fichier contenant les IPs cibles")
+    parser.add_argument("-o", "--output", type=Path, help="Chemin du rapport CSV")
+    parser.add_argument("-w", "--workers", type=int, help="Nombre de threads parallèles")
+
+    parser.add_argument("--snmp-user", default=os.environ.get("SNMP_USER"))
+    parser.add_argument("--snmp-auth-key", default=os.environ.get("SNMP_AUTH_KEY"))
+    parser.add_argument("--snmp-priv-key", default=os.environ.get("SNMP_PRIV_KEY"))
+    parser.add_argument("--snmp-auth-proto", default=os.environ.get("SNMP_AUTH_PROTO"))
+    parser.add_argument("--snmp-priv-proto", default=os.environ.get("SNMP_PRIV_PROTO"))
 
     args = parser.parse_args()
 
-    if not args.password:
-        args.password = getpass.getpass("SSH Password: ")
-
-    ips = load_ips(args.ips)
-    if not ips:
-        print("No IPs to audit. Exiting.")
+    if args.list_rules:
+        for rule_name in sorted(RULE_REGISTRY):
+            print(rule_name)
         return
 
-    snmp_creds = {}
-    snmp_rule_active = False
-    if args.rules:
-        if "snmp_v3_check" in args.rules.split(','):
-            snmp_rule_active = True
-    elif ALL_RULES.get("snmp_v3_check"):
-        snmp_rule_active = True
+    config = load_main_config(args.config)
+    log_level = config.get("log_level", "INFO")
+    configure_logging(log_level)
 
-    if snmp_rule_active:
-        print("\n--- SNMPv3 Configuration for 'snmp_v3_check' rule ---")
-        prompt_snmp_user = args.snmp_user
-        prompt_snmp_auth_key = args.snmp_auth_key
-        prompt_snmp_priv_key = args.snmp_priv_key
+    workers = args.workers or int(config.get("workers", 50))
+    ips_file = args.ips or Path(config.get("ips_file", "config/ips.txt"))
+    output_path = args.output
+    if output_path is None:
+        default_dir = config.get("output_dir", "results")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = Path(default_dir) / f"audit_{timestamp}.csv"
 
-        if not prompt_snmp_user:
-            prompt_snmp_user = input("Enter SNMPv3 Username: ")
-        if not prompt_snmp_auth_key:
-            prompt_snmp_auth_key = getpass.getpass("Enter SNMPv3 Auth Key: ")
-        if not prompt_snmp_priv_key:
-            prompt_snmp_priv_key = getpass.getpass("Enter SNMPv3 Priv Key: ")
+    if not args.password:
+        args.password = getpass.getpass("Mot de passe SSH : ")
 
-        if all([prompt_snmp_user, prompt_snmp_auth_key, prompt_snmp_priv_key]):
-            snmp_creds = {
-                "snmp_user": prompt_snmp_user,
-                "snmp_auth_key": prompt_snmp_auth_key,
-                "snmp_priv_key": prompt_snmp_priv_key,
-                "snmp_auth_proto": args.snmp_auth_proto.upper(),
-                "snmp_priv_proto": args.snmp_priv_proto.upper()
-            }
-            print(f"Using SNMP Auth Protocol: {snmp_creds['snmp_auth_proto']}")
-            print(f"Using SNMP Priv Protocol: {snmp_creds['snmp_priv_proto']}")
+    ips = load_ips(ips_file)
+    if not ips:
+        logging.warning("Aucune IP à auditer - arrêt")
+        return
+
+    cli_rules = parse_rules_argument(args.rules)
+    if cli_rules:
+        if any(rule == "all" for rule in cli_rules):
+            active_rules = list(RULE_REGISTRY.keys())
         else:
-            print("Warning: Incomplete SNMPv3 credentials provided. 'snmp_v3_check' rule will likely fail or report as non-compliant.")
-            snmp_creds = {}
-
-    rules_to_run_instances = []
-    if args.rules:
-        requested_rule_names = [r.strip() for r in args.rules.split(",")]
-        unknown = set(requested_rule_names) - set(ALL_RULES.keys())
-        if unknown:
-            parser.error(f"Unknown rules: {','.join(unknown)}")
-        rules_to_run_instances = [ALL_RULES[name] for name in requested_rule_names]
+            active_rules = cli_rules
     else:
-        rules_to_run_instances = list(ALL_RULES.values())
+        config_rules = parse_rules_argument(config.get("active_rules"))
+        active_rules = config_rules or list(RULE_REGISTRY.keys())
+
+    unknown_rules = [rule for rule in active_rules if rule not in RULE_REGISTRY]
+    if unknown_rules:
+        raise ValueError(f"Règles inconnues demandées: {', '.join(unknown_rules)}")
+
+    rule_instances = instantiate_rules(active_rules, Path("config"))
+
+    snmp_creds = {}
+    if any(rule.name == "snmp_v3_check" for rule in rule_instances):
+        snmp_creds = {
+            "snmp_user": args.snmp_user or config.get("snmp_user"),
+            "snmp_auth_key": args.snmp_auth_key or config.get("snmp_auth_key"),
+            "snmp_priv_key": args.snmp_priv_key or config.get("snmp_priv_key"),
+            "snmp_auth_proto": (args.snmp_auth_proto or config.get("snmp_auth_proto", "SHA")).upper(),
+            "snmp_priv_proto": (args.snmp_priv_proto or config.get("snmp_priv_proto", "AES")).upper(),
+        }
+        missing = [key for key, value in snmp_creds.items() if key in {"snmp_user", "snmp_auth_key", "snmp_priv_key"} and not value]
+        if missing:
+            logging.warning("Identifiants SNMP incomplets : %s", ", ".join(missing))
+
+    logging.info(
+        "Démarrage audit: %s règles | %s équipements | %s threads",
+        ",".join(rule.name for rule in rule_instances),
+        len(ips),
+        workers,
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = ["ip", "duration", "hostname", "model", "firmware"]
-    for rule_obj in rules_to_run_instances:
-        fieldnames += [f"{rule_obj.name}_compliant", f"{rule_obj.name}_details"]
+    for rule in rule_instances:
+        fieldnames += [f"{rule.name}_compliant", f"{rule.name}_details"]
 
-    if args.output:
-        csv_file = args.output
-    else:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_file = f"results/audit_{ts}.csv"
-    output_dir = os.path.dirname(csv_file)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    print(f"\n=== Parallel Audit (rules: {'all' if not args.rules else args.rules}, {args.workers} workers) ===\n")
     rows = []
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run_audit, ip, args.username, args.password, rules_to_run_instances, snmp_creds): ip
+            executor.submit(run_audit, ip, args.username, args.password, rule_instances, snmp_creds): ip
             for ip in ips
         }
-        for i, f in enumerate(as_completed(futures)):
-            ip_processed = futures[f]
+        for idx, future in enumerate(as_completed(futures), start=1):
+            ip_address = futures[future]
             try:
-                result_row = f.result()
-                rows.append(result_row)
-                print(f"Processed ({i+1}/{len(ips)}): {ip_processed} - Host: {result_row.get('hostname', 'N/A')}")
-            except Exception as exc:
-                print(f"ERROR during processing of {ip_processed}: {exc}")
-                error_row = {"ip": ip_processed, "duration": 0, "hostname": "ERROR", "model": str(exc), "firmware": ""}
-                for rule_obj in rules_to_run_instances:
-                    error_row[f"{rule_obj.name}_compliant"] = False
-                    error_row[f"{rule_obj.name}_details"] = "IP Processing Error"
+                row = future.result()
+                rows.append(row)
+                logging.info("[%s/%s] %s - %s", idx, len(ips), ip_address, row.get("hostname", "N/A"))
+            except Exception as exc:  # pragma: no cover - robuste face aux erreurs runtime
+                logging.exception("Erreur pendant le traitement de %s", ip_address)
+                error_row = {"ip": ip_address, "duration": 0, "hostname": "ERROR", "model": str(exc), "firmware": ""}
+                for rule in rule_instances:
+                    error_row[f"{rule.name}_compliant"] = False
+                    error_row[f"{rule.name}_details"] = "Erreur d'exécution"
                 rows.append(error_row)
 
-    try:
-        with open(csv_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({key: str(value) for key, value in row.items()})
-        print(f"\n📄 CSV report written to {csv_file}")
+    with output_path.open("w", newline="", encoding="utf-8") as csv_handle:
+        writer = csv.DictWriter(csv_handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: str(value) for key, value in row.items()})
 
-        html_output = csv_file.replace(".csv", ".html")
-        generate_html_dashboard(csv_file, html_output)
-        print(f"📄 HTML report written to {html_output}")
+    logging.info("Rapport CSV: %s", output_path)
+    html_output = output_path.with_suffix(".html")
+    generate_html_dashboard(str(output_path), str(html_output))
+    logging.info("Rapport HTML: %s", html_output)
 
-    except IOError as e:
-        print(f"Error writing CSV/HTML file: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred during report generation: {e}")
 
 if __name__ == "__main__":
     main()

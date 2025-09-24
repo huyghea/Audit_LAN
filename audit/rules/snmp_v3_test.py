@@ -19,10 +19,13 @@ from pysnmp.hlapi.asyncio import (
 )
 from .base_rules import BaseAuditRule
 
-async def _internal_test_snmp_v3(host, user, auth_key, priv_key, 
-                                 oid='1.3.6.1.2.1.1.3.0 ', # sysUpTime.0
-                                 auth_protocol_str="SHA", priv_protocol_str="AES",
-                                 timeout_val=5, retries_val=0):
+async def _internal_test_snmp_v3(host, user, auth_key, priv_key,
+                                 oid: str,
+                                 port: int,
+                                 auth_protocol_str: str,
+                                 priv_protocol_str: str,
+                                 timeout_val: int,
+                                 retries_val: int):
     auth_proto_obj = {
         'MD5': usmHMACMD5AuthProtocol,
         'SHA': usmHMACSHAAuthProtocol
@@ -36,7 +39,7 @@ async def _internal_test_snmp_v3(host, user, auth_key, priv_key,
     snmpEngine = SnmpEngine()
     
     try:
-        transport_target_instance = await UdpTransportTarget.create((host, 161), timeout=timeout_val, retries=retries_val)
+        transport_target_instance = await UdpTransportTarget.create((host, port), timeout=timeout_val, retries=retries_val)
         
         errorIndication, errorStatus, errorIndex, varBinds = await get_cmd_async(
             snmpEngine,
@@ -87,18 +90,22 @@ class SnmpV3CheckRule(BaseAuditRule):
         user = info.get("snmp_user")
         auth_key = info.get("snmp_auth_key")
         priv_key = info.get("snmp_priv_key")
-        auth_proto_str = info.get("snmp_auth_proto", "SHA") # Use default if not provided
-        priv_proto_str = info.get("snmp_priv_proto", "AES") # Use default if not provided
+        auth_proto_str = info.get("snmp_auth_proto", self.config.get("auth_protocol", "SHA"))
+        priv_proto_str = info.get("snmp_priv_proto", self.config.get("priv_protocol", "AES"))
 
         if not all([user, auth_key, priv_key]):
              return {"passed": False, "details": "SNMPv3 credentials (snmp_user, snmp_auth_key, snmp_priv_key) not found in info dict"}
-        
+
         try:
             success, details = asyncio.run(
                 _internal_test_snmp_v3(
                     ip, user, auth_key, priv_key,
+                    oid=self.config.get("oid", "1.3.6.1.2.1.1.3.0"),
+                    port=int(self.config.get("port", 161)),
                     auth_protocol_str=auth_proto_str,
-                    priv_protocol_str=priv_proto_str
+                    priv_protocol_str=priv_proto_str,
+                    timeout_val=int(self.config.get("timeout", 5)),
+                    retries_val=int(self.config.get("retries", 0))
                 )
             )
             return {"passed": success, "details": details}
