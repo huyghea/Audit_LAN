@@ -1,0 +1,5 @@
+# Liste des adresses IP des équipements
+10.217.9.27
+10.217.9.28
+10.217.9.29
+10.217.9.30
