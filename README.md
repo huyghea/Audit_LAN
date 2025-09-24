@@ -10,12 +10,27 @@ Options principales :
 
 * `-c` : chemin vers le fichier `main.ini` (par défaut `config/main.ini`).
 * `-i` : fichier contenant les adresses IP (sinon celui défini dans la configuration).
-* `-r` : liste de règles à exécuter (séparées par des virgules). Sans valeur, toutes les règles actives dans la configuration sont lancées.
+* `-r/--rules` : noms des règles à exécuter (séparés par un espace ou une virgule). Utiliser `all` pour forcer l'exécution de l'ensemble des contrôles.
+* `--list-rules` : affiche la liste des règles disponibles puis quitte (utile pour paramétrer un job Rundeck).
 * `-w` : nombre de threads.
 
 Les identifiants SNMP peuvent être fournis via la ligne de commande ou des variables d'environnement (`SNMP_USER`, `SNMP_AUTH_KEY`, `SNMP_PRIV_KEY`, `SNMP_AUTH_PROTO`, `SNMP_PRIV_PROTO`).
 
 Les rapports CSV et HTML sont générés dans le dossier `results/` (modifiable dans `main.ini`).
+
+### Intégration dans Rundeck
+
+1. Créer un job en mode `Command` et pointer vers `python3 main.py`.
+2. Déclarer des options Rundeck (ex. `username`, `password`, `rules`, `config`) et mappez-les aux arguments CLI, par exemple :
+
+   ```bash
+   python3 main.py -u @option.username@ -p @option.password@ -c @option.config@ --rules @option.rules@
+   ```
+
+   * Pour lancer l'intégralité des contrôles, passez `rules=all` ou laissez le champ vide pour s'appuyer sur `active_rules` dans `main.ini`.
+   * Pour un sous-ensemble, fournissez une liste séparée par des espaces : `rules="cpu_usage memory_usage"`.
+3. Les secrets (mot de passe SSH, clés SNMP) peuvent être injectés via les `Secure Options` Rundeck ou des variables d'environnement.
+4. Activez l'option `--list-rules` dans un job de diagnostic afin de synchroniser automatiquement les listes déroulantes Rundeck.
 
 ## Structure de configuration
 

@@ -26,6 +26,35 @@ def normalize_list(value: str | Iterable[str], separator: str = ",") -> List[str
     return [item for item in items if item]
 
 
+def parse_rules_argument(raw: Iterable[str] | str | None) -> List[str]:
+    """Convertit l'entrée CLI/configuration en liste de règles sans doublon."""
+
+    if raw is None:
+        return []
+
+    if isinstance(raw, str):
+        candidates = raw.split(",")
+    else:
+        candidates = []
+        for element in raw:
+            if element is None:
+                continue
+            candidates.extend(str(part) for part in str(element).split(","))
+
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        name = candidate.strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(key)
+    return cleaned
+
+
 def disable_paging(connection, commands: Sequence[str]) -> None:
     """Désactive la pagination sur la connexion Netmiko fournie."""
 

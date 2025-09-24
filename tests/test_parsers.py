@@ -12,6 +12,7 @@ from audit.rules.storage_capacity import extract_disk_usage, extract_firmwares
 from audit.rules.temperature import parse_temperatures
 from audit.rules.transceiver_diagnostics import parse_transceivers
 from audit.rules.uptime import parse_uptime
+from audit.utils import parse_rules_argument
 
 
 class ParserTests(unittest.TestCase):
@@ -63,6 +64,11 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(seconds, 1 * 7 * 86400 + 2 * 86400 + 3 * 3600 + 4 * 60)
         self.assertIn("weeks", formatted)
 
+    def test_parse_rules_argument(self) -> None:
+        self.assertEqual(parse_rules_argument("sysname,tacacs"), ["sysname", "tacacs"])
+        self.assertEqual(parse_rules_argument(["cpu_usage", "cpu_usage", "memory_usage"]), ["cpu_usage", "memory_usage"])
+        self.assertEqual(parse_rules_argument(["snmp_v3_check,memory_usage", "ALL"]), ["snmp_v3_check", "memory_usage", "all"])
+        self.assertEqual(parse_rules_argument(None), [])
 
 if __name__ == "__main__":
     unittest.main()

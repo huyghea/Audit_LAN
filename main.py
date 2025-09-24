@@ -15,6 +15,7 @@ from typing import List
 from audit.config_loader import load_main_config
 from audit.runner import instantiate_rules, run_audit
 from audit.rules import RULE_REGISTRY
+from audit.utils import parse_rules_argument
 from report.dashboard import generate_html_dashboard
 
 DEFAULT_CONFIG = Path("config") / "main.ini"
@@ -41,7 +42,13 @@ def main() -> None:
     parser.add_argument("-u", "--username", required=True, help="Nom d'utilisateur SSH")
     parser.add_argument("-p", "--password", help="Mot de passe SSH (sinon saisie interactive)")
     parser.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG, help="Fichier de configuration .ini")
-    parser.add_argument("-r", "--rules", help="Liste de règles à exécuter (séparées par des virgules)")
+    parser.add_argument(
+        "-r",
+        "--rules",
+        nargs="+",
+        help="Règles à exécuter (noms séparés par un espace ou une virgule; 'all' pour tout exécuter)",
+    )
+    parser.add_argument("--list-rules", action="store_true", help="Affiche les règles disponibles puis quitte")
     parser.add_argument("-i", "--ips", type=Path, help="Fichier contenant les IPs cibles")
     parser.add_argument("-o", "--output", type=Path, help="Chemin du rapport CSV")
     parser.add_argument("-w", "--workers", type=int, help="Nombre de threads parallèles")
@@ -54,6 +61,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.list_rules:
+        for rule_name in sorted(RULE_REGISTRY):
+            print(rule_name)
+        return
     config = load_main_config(args.config)
     log_level = config.get("log_level", "INFO")
     configure_logging(log_level)
@@ -73,13 +84,16 @@ def main() -> None:
     if not ips:
         logging.warning("Aucune IP à auditer - arrêt")
         return
-
-    active_rules = args.rules.split(",") if args.rules else config.get("active_rules")
-    if isinstance(active_rules, str):
-        active_rules = [rule.strip() for rule in active_rules.split(",") if rule.strip()]
-
-    if not active_rules:
-        active_rules = list(RULE_REGISTRY.keys())
+      
+    cli_rules = parse_rules_argument(args.rules)
+    if cli_rules:
+        if any(rule == "all" for rule in cli_rules):
+            active_rules = list(RULE_REGISTRY.keys())
+        else:
+            active_rules = cli_rules
+    else:
+        config_rules = parse_rules_argument(config.get("active_rules"))
+        active_rules = config_rules or list(RULE_REGISTRY.keys())
 
     unknown_rules = [rule for rule in active_rules if rule not in RULE_REGISTRY]
     if unknown_rules:
