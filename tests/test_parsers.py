@@ -70,6 +70,5 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parse_rules_argument(["snmp_v3_check,memory_usage", "ALL"]), ["snmp_v3_check", "memory_usage", "all"])
         self.assertEqual(parse_rules_argument(None), [])
 
-
 if __name__ == "__main__":
     unittest.main()

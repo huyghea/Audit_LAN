@@ -65,7 +65,6 @@ def main() -> None:
         for rule_name in sorted(RULE_REGISTRY):
             print(rule_name)
         return
-
     config = load_main_config(args.config)
     log_level = config.get("log_level", "INFO")
     configure_logging(log_level)
@@ -85,7 +84,7 @@ def main() -> None:
     if not ips:
         logging.warning("Aucune IP à auditer - arrêt")
         return
-
+      
     cli_rules = parse_rules_argument(args.rules)
     if cli_rules:
         if any(rule == "all" for rule in cli_rules):
